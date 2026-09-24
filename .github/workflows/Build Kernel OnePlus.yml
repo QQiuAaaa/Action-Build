@@ -850,6 +850,15 @@ jobs:
           fi
           source $REJ_CHECKER
           check_rejects .
+          
+      - name: Apply Close Range CLOEXEC Fix
+        run: |
+          PATCH_DIR="${GITHUB_WORKSPACE}/kernel_workspace/Action-Build/patches"
+          cd kernel_workspace/kernel_platform/common
+          echo "正在修复 close_range(CLOSE_RANGE_CLOEXEC) 以支持 netd 热点..."
+          patch -p1 --forward < "${PATCH_DIR}/close_range/fix-close-range-cloexec.patch" || true
+          source $REJ_CHECKER
+          check_rejects .
 
       - name: Apply RE_KERNEL
         if: ${{ github.event.inputs.RE_KERNEL == 'true' }}
