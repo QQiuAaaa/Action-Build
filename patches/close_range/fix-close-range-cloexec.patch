@@ -1,0 +1,59 @@
+--- a/include/uapi/linux/close_range.h
++++ b/include/uapi/linux/close_range.h
+@@ -3,6 +3,9 @@
+ 
+ /* Unshare the file descriptor table before closing file descriptors. */
+ #define CLOSE_RANGE_UNSHARE	(1U << 1)
+ 
++/* Set the close-on-exec flag on the file descriptors instead of closing them. */
++#define CLOSE_RANGE_CLOEXEC	(1U << 2)
++
+ #endif /* _UAPI_LINUX_CLOSE_RANGE_H */
+--- a/fs/file.c
++++ b/fs/file.c
+@@ -718,7 +718,7 @@ int __close_range(unsigned fd, unsigned max_fd, unsigned int flags)
+ 	struct task_struct *me = current;
+ 	struct files_struct *cur_fds = me->files, *fds = NULL;
+ 
+-	if (flags & ~CLOSE_RANGE_UNSHARE)
++	if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+ 		return -EINVAL;
+ 
+ 	if (fd > max_fd)
+@@ -755,15 +755,29 @@ int __close_range(unsigned fd, unsigned max_fd, unsigned int flags)
+ 		}
+ 
+ 	max_fd = min(max_fd, cur_max);
+-	while (fd <= max_fd) {
+-		struct file *file;
+ 
+-		file = pick_file(cur_fds, fd++);
+-		if (!file)
+-			continue;
+-
+-		filp_close(file, cur_fds);
+-		cond_resched();
++	if (flags & CLOSE_RANGE_CLOEXEC) {
++		struct fdtable *fdt;
++
++		spin_lock(&cur_fds->file_lock);
++		fdt = files_fdtable(cur_fds);
++		if (fdt->max_fds)
++			max_fd = min(max_fd, fdt->max_fds - 1);
++		if (fd <= max_fd)
++			bitmap_set(fdt->close_on_exec, fd, max_fd - fd + 1);
++		spin_unlock(&cur_fds->file_lock);
++	} else {
++		while (fd <= max_fd) {
++			struct file *file;
++
++			file = pick_file(cur_fds, fd++);
++			if (!file)
++				continue;
++
++			filp_close(file, cur_fds);
++			cond_resched();
++		}
+ 	}
+ 
+ 	if (fds) {
