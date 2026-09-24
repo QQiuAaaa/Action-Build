@@ -1,0 +1,45 @@
+diff --git a/include/uapi/linux/close_range.h b/include/uapi/linux/close_range.h
+--- a/include/uapi/linux/close_range.h
++++ b/include/uapi/linux/close_range.h
+@@ -6,1 +6,3 @@
+ #define CLOSE_RANGE_UNSHARE	(1U << 1)
++
++#define CLOSE_RANGE_CLOEXEC	(1U << 2)
+diff --git a/fs/file.c b/fs/file.c
+--- a/fs/file.c
++++ b/fs/file.c
+@@ -721,1 +721,1 @@
+-	if (flags & ~CLOSE_RANGE_UNSHARE)
++	if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+@@ -759,10 +759,22 @@
+-	while (fd <= max_fd) {
+-		struct file *file;
+-
+-		file = pick_file(cur_fds, fd++);
+-		if (!file)
+-			continue;
+-
+-		filp_close(file, cur_fds);
+-		cond_resched();
++	if (flags & CLOSE_RANGE_CLOEXEC) {
++		struct fdtable *fdt;
++
++		spin_lock(&cur_fds->file_lock);
++		fdt = files_fdtable(cur_fds);
++		if (fdt->max_fds)
++			max_fd = min(max_fd, fdt->max_fds - 1);
++		if (fd <= max_fd)
++			bitmap_set(fdt->close_on_exec, fd, max_fd - fd + 1);
++		spin_unlock(&cur_fds->file_lock);
++	} else {
++		while (fd <= max_fd) {
++			struct file *file;
++
++			file = pick_file(cur_fds, fd++);
++			if (!file)
++				continue;
++
++			filp_close(file, cur_fds);
++			cond_resched();
++		}
+ 	}
