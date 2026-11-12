@@ -621,6 +621,8 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           echo "正在修复 close_range(CLOSE_RANGE_CLOEXEC) 以支持 netd 热点..."
           patch -p1 --forward < "${PATCH_DIR}/close_range/fix-close-range-cloexec.patch" || true
+          echo "正在修复 overlay挂载..."
+          patch -p1 --forward < "${PATCH_DIR}/close_range/overlayfs-5.10-userxattr-backport.patch" || true
           source $REJ_CHECKER
           check_rejects .
 
