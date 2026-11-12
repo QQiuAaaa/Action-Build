@@ -1,0 +1,197 @@
+diff --git a/fs/overlayfs/inode.c b/fs/overlayfs/inode.c
+index df35954..0faf750 100644
+--- a/fs/overlayfs/inode.c
++++ b/fs/overlayfs/inode.c
+@@ -329,8 +329,13 @@ static const char *ovl_get_link(struct dentry *dentry,
+ 
+ bool ovl_is_private_xattr(struct super_block *sb, const char *name)
+ {
+-	return strncmp(name, OVL_XATTR_PREFIX,
+-		       sizeof(OVL_XATTR_PREFIX) - 1) == 0;
++	struct ovl_fs *ofs = OVL_FS(sb);
++
++	if (ofs->config.userxattr)
++		return strncmp(name, OVL_XATTR_USER_PREFIX,
++			       sizeof(OVL_XATTR_USER_PREFIX) - 1) == 0;
++	return strncmp(name, OVL_XATTR_TRUSTED_PREFIX,
++		       sizeof(OVL_XATTR_TRUSTED_PREFIX) - 1) == 0;
+ }
+ 
+ int ovl_xattr_set(struct dentry *dentry, struct inode *inode, const char *name,
+diff --git a/fs/overlayfs/overlayfs.h b/fs/overlayfs/overlayfs.h
+index a9f9923..b6fa5f1 100644
+--- a/fs/overlayfs/overlayfs.h
++++ b/fs/overlayfs/overlayfs.h
+@@ -22,7 +22,8 @@ enum ovl_path_type {
+ #define OVL_TYPE_MERGE(type)	((type) & __OVL_PATH_MERGE)
+ #define OVL_TYPE_ORIGIN(type)	((type) & __OVL_PATH_ORIGIN)
+ 
+-#define OVL_XATTR_PREFIX XATTR_TRUSTED_PREFIX "overlay."
++#define OVL_XATTR_TRUSTED_PREFIX XATTR_TRUSTED_PREFIX "overlay."
++#define OVL_XATTR_USER_PREFIX XATTR_USER_PREFIX "overlay."
+ 
+ enum ovl_xattr {
+ 	OVL_XATTR_OPAQUE,
+@@ -113,10 +114,10 @@ struct ovl_fh {
+ #define OVL_FH_FID_OFFSET	(OVL_FH_WIRE_OFFSET + \
+ 				 offsetof(struct ovl_fb, fid))
+ 
+-extern const char *ovl_xattr_table[];
++extern const char * const ovl_xattr_table[][2];
+ static inline const char *ovl_xattr(struct ovl_fs *ofs, enum ovl_xattr ox)
+ {
+-	return ovl_xattr_table[ox];
++	return ovl_xattr_table[ox][ofs->config.userxattr];
+ }
+ 
+ static inline int ovl_do_rmdir(struct inode *dir, struct dentry *dentry)
+diff --git a/fs/overlayfs/ovl_entry.h b/fs/overlayfs/ovl_entry.h
+index c5d9a02..97842dc 100644
+--- a/fs/overlayfs/ovl_entry.h
++++ b/fs/overlayfs/ovl_entry.h
+@@ -17,6 +17,7 @@ struct ovl_config {
+ 	bool nfs_export;
+ 	int xino;
+ 	bool metacopy;
++	bool userxattr;
+ 	bool ovl_volatile;
+ 	bool override_creds;
+ };
+diff --git a/fs/overlayfs/super.c b/fs/overlayfs/super.c
+index d59624b..057df15 100644
+--- a/fs/overlayfs/super.c
++++ b/fs/overlayfs/super.c
+@@ -392,6 +392,8 @@ static int ovl_show_options(struct seq_file *m, struct dentry *dentry)
+ 	if (ofs->config.override_creds != ovl_override_creds_def)
+ 		seq_show_option(m, "override_creds",
+ 				ofs->config.override_creds ? "on" : "off");
++	if (ofs->config.userxattr)
++		seq_puts(m, ",userxattr");
+ 	return 0;
+ }
+ 
+@@ -446,6 +448,7 @@ enum {
+ 	OPT_VOLATILE,
+ 	OPT_OVERRIDE_CREDS_ON,
+ 	OPT_OVERRIDE_CREDS_OFF,
++	OPT_USERXATTR,
+ 	OPT_ERR,
+ };
+ 
+@@ -467,6 +470,7 @@ static const match_table_t ovl_tokens = {
+ 	{OPT_VOLATILE,			"volatile"},
+ 	{OPT_OVERRIDE_CREDS_ON,		"override_creds=on"},
+ 	{OPT_OVERRIDE_CREDS_OFF,	"override_creds=off"},
++	{OPT_USERXATTR,			"userxattr"},
+ 	{OPT_ERR,			NULL}
+ };
+ 
+@@ -624,6 +628,10 @@ static int ovl_parse_opt(char *opt, struct ovl_config *config)
+ 			config->override_creds = false;
+ 			break;
+ 
++		case OPT_USERXATTR:
++			config->userxattr = true;
++			break;
++
+ 		default:
+ 			pr_err("unrecognized mount option \"%s\" or missing value\n",
+ 					p);
+@@ -727,6 +735,28 @@ static int ovl_parse_opt(char *opt, struct ovl_config *config)
+ 		}
+ 	}
+ 
++	/* Resolve userxattr -> !redirect && !metacopy dependency */
++	if (config->userxattr) {
++		if (redirect_opt &&
++		    (config->redirect_dir || config->redirect_follow)) {
++			pr_err("conflicting options: userxattr,redirect_dir=%s\n",
++			       config->redirect_mode);
++			return -EINVAL;
++		}
++		if (config->metacopy && metacopy_opt) {
++			pr_err("conflicting options: userxattr,metacopy=on\n");
++			return -EINVAL;
++		}
++		/*
++		 * Silently disable default setting of redirect and metacopy.
++		 * These must be explicitly enabled when used together with
++		 * userxattr.
++		 */
++		config->redirect_dir = false;
++		config->redirect_follow = false;
++		config->metacopy = false;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1082,8 +1112,14 @@ ovl_posix_acl_default_xattr_handler = {
+ 	.set = ovl_posix_acl_xattr_set,
+ };
+ 
+-static const struct xattr_handler ovl_own_xattr_handler = {
+-	.prefix	= OVL_XATTR_PREFIX,
++static const struct xattr_handler ovl_own_trusted_xattr_handler = {
++	.prefix	= OVL_XATTR_TRUSTED_PREFIX,
++	.get = ovl_own_xattr_get,
++	.set = ovl_own_xattr_set,
++};
++
++static const struct xattr_handler ovl_own_user_xattr_handler = {
++	.prefix	= OVL_XATTR_USER_PREFIX,
+ 	.get = ovl_own_xattr_get,
+ 	.set = ovl_own_xattr_set,
+ };
+@@ -1094,12 +1130,22 @@ static const struct xattr_handler ovl_other_xattr_handler = {
+ 	.set = ovl_other_xattr_set,
+ };
+ 
+-static const struct xattr_handler *ovl_xattr_handlers[] = {
++static const struct xattr_handler *ovl_xattr_handlers_trusted[] = {
++#ifdef CONFIG_FS_POSIX_ACL
++	&ovl_posix_acl_access_xattr_handler,
++	&ovl_posix_acl_default_xattr_handler,
++#endif
++	&ovl_own_trusted_xattr_handler,
++	&ovl_other_xattr_handler,
++	NULL
++};
++
++static const struct xattr_handler *ovl_xattr_handlers_user[] = {
+ #ifdef CONFIG_FS_POSIX_ACL
+ 	&ovl_posix_acl_access_xattr_handler,
+ 	&ovl_posix_acl_default_xattr_handler,
+ #endif
+-	&ovl_own_xattr_handler,
++	&ovl_own_user_xattr_handler,
+ 	&ovl_other_xattr_handler,
+ 	NULL
+ };
+@@ -2049,7 +2095,8 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
+ 	cap_lower(cred->cap_effective, CAP_SYS_RESOURCE);
+ 
+ 	sb->s_magic = OVERLAYFS_SUPER_MAGIC;
+-	sb->s_xattr = ovl_xattr_handlers;
++	sb->s_xattr = ofs->config.userxattr ? ovl_xattr_handlers_user :
++					      ovl_xattr_handlers_trusted;
+ 	sb->s_fs_info = ofs;
+ 	sb->s_flags |= SB_POSIXACL;
+ 	sb->s_iflags |= SB_I_SKIP_SYNC;
+diff --git a/fs/overlayfs/util.c b/fs/overlayfs/util.c
+index b103ce2..2efbf83 100644
+--- a/fs/overlayfs/util.c
++++ b/fs/overlayfs/util.c
+@@ -611,9 +611,10 @@ bool ovl_check_dir_xattr(struct super_block *sb, struct dentry *dentry,
+ #define OVL_XATTR_METACOPY_POSTFIX	"metacopy"
+ 
+ #define OVL_XATTR_TAB_ENTRY(x) \
+-	[x] = OVL_XATTR_PREFIX x ## _POSTFIX
++	[x] = { OVL_XATTR_TRUSTED_PREFIX x ## _POSTFIX, \
++		OVL_XATTR_USER_PREFIX x ## _POSTFIX }
+ 
+-const char *ovl_xattr_table[] = {
++const char * const ovl_xattr_table[][2] = {
+ 	OVL_XATTR_TAB_ENTRY(OVL_XATTR_OPAQUE),
+ 	OVL_XATTR_TAB_ENTRY(OVL_XATTR_REDIRECT),
+ 	OVL_XATTR_TAB_ENTRY(OVL_XATTR_ORIGIN),
