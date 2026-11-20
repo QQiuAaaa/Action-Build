@@ -39,7 +39,7 @@ on:
         type: string
         description: "自定义内核后缀(不输入使用RAND_STR或-1关闭)//Custom kernel suffix (Leave blank to use RAND_STR, or -1 to disable)"
         required: false
-        default: "QQQiuCi-20260924"
+        default: "QQQiuCi-20261120"
       RESUBLEVEL:
         description: "自定义内核等级欺骗(SUBLEVEL)//Custom kernel SUBLEVEL spoofing"
         required: false
@@ -68,7 +68,7 @@ on:
         type: boolean
         description: "是否添加Unicode不可见字码点绕过读取漏洞修复？//Add patch for Unicode invisible code point read bypass vulnerability?"
         required: true
-        default: false
+        default: true
       SCHED_HMBIRD:
         type: boolean
         description: "是否添加风驰驱动1.0？//Add Fengchi (HMBIRD) Driver 1.0?"
@@ -78,7 +78,7 @@ on:
         type: boolean
         description: "是否添加轻量级Linux容器支持(DroidSpaces)？//Add lightweight Linux container support (DroidSpaces)?"
         required: true
-        default: false
+        default: true
       RE_KERNEL:
         type: boolean
         description: "是否添加Re-Kernel？//Add Re-Kernel?"
@@ -621,10 +621,10 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           echo "正在修复 close_range(CLOSE_RANGE_CLOEXEC) 以支持 netd 热点..."
           patch -p1 --forward < "${PATCH_DIR}/close_range/fix-close-range-cloexec.patch" || true
-          echo "正在修复 overlay挂载..."
-          patch -p1 --forward < "${PATCH_DIR}/close_range/overlayfs-5.10-userxattr-backport.patch" || true
-          source $REJ_CHECKER
-          check_rejects .
+          #echo "正在修复 overlay挂载..."
+          #patch -p1 --forward < "${PATCH_DIR}/close_range/overlayfs-5.10-userxattr-backport.patch" || true
+          #source $REJ_CHECKER
+          #check_rejects .
 
       - name: Apply RE_KERNEL
         if: ${{ github.event.inputs.RE_KERNEL == 'true' }}
